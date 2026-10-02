@@ -12,6 +12,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;600;800&display=swap" rel="stylesheet">
     <!-- Canvas Confetti for celebratory animations -->
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <!-- Public Zero-Config Realtime Engine (MQTT WebSockets) -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 
     <script>
         tailwind.config = {
@@ -442,49 +444,8 @@
         <p>문화 존중 초등 3학년 모둠 활동 게임 | 다문화 및 문화 다양성 이해 교육</p>
     </footer>
 
-    <!-- Firebase Module Integration -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // Firebase Configuration (Using global standard placeholders)
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            apiKey: "demo-api-key",
-            authDomain: "demo-app.firebaseapp.com",
-            projectId: "demo-app",
-            storageBucket: "demo-app.appspot.com",
-            messagingSenderId: "123456789",
-            appId: "1:123456789:web:demo"
-        };
-
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'culture-respect-game';
-
-        // Initialize Firebase
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-
-        let currentUser = null;
-        let activeRoomId = null;
-        let roomUnsubscribe = null;
-
-        // Authenticate User
-        async function initAuth() {
-            try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    const userCred = await signInWithCustomToken(auth, __initial_auth_token);
-                    currentUser = userCred.user;
-                } else {
-                    const userCred = await signInAnonymously(auth);
-                    currentUser = userCred.user;
-                }
-            } catch (err) {
-                console.warn("Firebase Auth Warning (Fallback to Local Sync):", err);
-            }
-        }
-        initAuth();
-
+    <!-- Zero-Config Realtime Game Logic -->
+    <script>
         // 12 Situations Data for Culture Respect
         const CULTURE_CARDS = [
             {
@@ -580,10 +541,13 @@
             activeTileIndex: null,
             timerRunning: false,
             timeRemaining: 30,
-            selectedClaimingPlayer: 1
+            selectedClaimingPlayer: 1,
+            lastUpdated: 0
         };
 
         let timerInterval = null;
+        let mqttClient = null;
+        let activeRoomId = null;
 
         // Player Colors Mapping
         const PLAYER_CONFIG = {
@@ -596,6 +560,7 @@
         // Render 12 Tiles Board
         window.renderBoard = function() {
             const grid = document.getElementById("boardGrid");
+            if (!grid) return;
             grid.innerHTML = "";
 
             gameState.board.forEach((claimedPlayer, idx) => {
@@ -607,14 +572,16 @@
 
                 if (claimedPlayer !== null) {
                     const cfg = PLAYER_CONFIG[claimedPlayer];
-                    tileStyleClass = cfg.tileClass;
-                    iconContent = `
-                        <div class="flex flex-col items-center justify-center">
-                            <span class="font-jua text-xl md:text-2xl">${tileNum}번</span>
-                            <i class="${cfg.icon} text-2xl md:text-3xl mt-1"></i>
-                            <span class="text-xs font-jua mt-0.5">${cfg.name.split(' ')[0]} 점령</span>
-                        </div>
-                    `;
+                    if (cfg) {
+                        tileStyleClass = cfg.tileClass;
+                        iconContent = `
+                            <div class="flex flex-col items-center justify-center">
+                                <span class="font-jua text-xl md:text-2xl">${tileNum}번</span>
+                                <i class="${cfg.icon} text-2xl md:text-3xl mt-1"></i>
+                                <span class="text-xs font-jua mt-0.5">${cfg.name.split(' ')[0]} 점령</span>
+                            </div>
+                        `;
+                    }
                 }
 
                 tile.className = `tile-card ${tileStyleClass} h-32 md:h-36 rounded-3xl p-3 flex flex-col items-center justify-center cursor-pointer font-jua relative overflow-hidden select-none active:scale-95 border-2 border-white/50`;
@@ -634,11 +601,12 @@
         function updateScores() {
             const counts = { 1: 0, 2: 0, 3: 0, 4: 0 };
             gameState.board.forEach(p => {
-                if (p !== null) counts[p]++;
+                if (p !== null && counts[p] !== undefined) counts[p]++;
             });
 
             for (let i = 1; i <= 4; i++) {
-                document.getElementById(`score-${i}`).innerText = counts[i];
+                const scoreEl = document.getElementById(`score-${i}`);
+                if (scoreEl) scoreEl.innerText = counts[i];
             }
         }
 
@@ -648,16 +616,22 @@
             const activeTag = document.getElementById("activePlayerTag");
             const activeText = document.getElementById("activePlayerText");
 
-            activeTag.className = `px-4 py-2 rounded-2xl font-jua text-lg md:text-xl text-white shadow flex items-center gap-2 transition-all ${activePlayer.colorClass}`;
-            activeText.innerText = activePlayer.name;
+            if (activeTag && activePlayer) {
+                activeTag.className = `px-4 py-2 rounded-2xl font-jua text-lg md:text-xl text-white shadow flex items-center gap-2 transition-all ${activePlayer.colorClass}`;
+            }
+            if (activeText && activePlayer) {
+                activeText.innerText = activePlayer.name;
+            }
 
             // Highlight active player card
             for (let i = 1; i <= 4; i++) {
                 const card = document.getElementById(`pCard-${i}`);
-                if (i === gameState.currentTurn) {
-                    card.classList.add("ring-4", "ring-indigo-400", "scale-105");
-                } else {
-                    card.classList.remove("ring-4", "ring-indigo-400", "scale-105");
+                if (card) {
+                    if (i === gameState.currentTurn) {
+                        card.classList.add("ring-4", "ring-indigo-400", "scale-105");
+                    } else {
+                        card.classList.remove("ring-4", "ring-indigo-400", "scale-105");
+                    }
                 }
             }
 
@@ -702,17 +676,17 @@
             const timerText = document.getElementById("timerSeconds");
             const timerBar = document.getElementById("timerBar");
 
-            timerText.innerText = gameState.timeRemaining;
-            timerBar.style.width = "100%";
+            if (timerText) timerText.innerText = gameState.timeRemaining;
+            if (timerBar) timerBar.style.width = "100%";
 
             const totalTime = seconds;
 
             timerInterval = setInterval(() => {
                 gameState.timeRemaining--;
-                timerText.innerText = gameState.timeRemaining;
+                if (timerText) timerText.innerText = gameState.timeRemaining;
 
                 const percent = (gameState.timeRemaining / totalTime) * 100;
-                timerBar.style.width = `${Math.max(0, percent)}%`;
+                if (timerBar) timerBar.style.width = `${Math.max(0, percent)}%`;
 
                 if (gameState.timeRemaining <= 0) {
                     clearInterval(timerInterval);
@@ -743,12 +717,14 @@
         function updateClaimingButtonsUI() {
             for (let i = 1; i <= 4; i++) {
                 const btn = document.getElementById(`claimP${i}`);
-                if (i === gameState.selectedClaimingPlayer) {
-                    btn.classList.remove("opacity-50");
-                    btn.classList.add("opacity-100", "ring-2", "ring-offset-1");
-                } else {
-                    btn.classList.add("opacity-50");
-                    btn.classList.remove("opacity-100", "ring-2", "ring-offset-1");
+                if (btn) {
+                    if (i === gameState.selectedClaimingPlayer) {
+                        btn.classList.remove("opacity-50");
+                        btn.classList.add("opacity-100", "ring-2", "ring-offset-1");
+                    } else {
+                        btn.classList.add("opacity-50");
+                        btn.classList.remove("opacity-100", "ring-2", "ring-offset-1");
+                    }
                 }
             }
         }
@@ -768,11 +744,9 @@
                 gameState.board[targetTile] = playerToClaim;
 
                 // Fire Confetti Animation
-                confetti({
-                    particleCount: 70,
-                    spread: 60,
-                    origin: { y: 0.6 }
-                });
+                if (typeof confetti === 'function') {
+                    confetti({ particleCount: 70, spread: 60, origin: { y: 0.6 } });
+                }
 
                 showToast(`🎉 ${PLAYER_CONFIG[playerToClaim].name}님이 ${targetTile + 1}번 땅을 점령했습니다!`);
 
@@ -784,7 +758,7 @@
                 gameState.currentTurn = (gameState.currentTurn % 4) + 1;
             }
 
-            // Sync with Firebase or Local State
+            // Sync state to all tablets
             syncGameState();
 
             // Close Modal
@@ -831,24 +805,26 @@
 
             const winnerNames = winners.map(w => PLAYER_CONFIG[w].name).join(", ");
             const announcement = document.getElementById("winnerAnnouncementText");
-            announcement.innerText = `가장 많은 땅(${maxScore}칸)을 차지한 [ ${winnerNames} ] 승리!`;
+            if (announcement) {
+                announcement.innerText = `가장 많은 땅(${maxScore}칸)을 차지한 [ ${winnerNames} ] 승리!`;
+            }
 
             const summaryList = document.getElementById("finalScoreList");
-            summaryList.innerHTML = `
-                <div class="flex justify-between text-pRed"><span>1번 빨강:</span> <span>${counts[1]}칸</span></div>
-                <div class="flex justify-between text-pGreen"><span>2번 초록:</span> <span>${counts[2]}칸</span></div>
-                <div class="flex justify-between text-pBlue"><span>3번 파랑:</span> <span>${counts[3]}칸</span></div>
-                <div class="flex justify-between text-pYellow"><span>4번 노랑:</span> <span>${counts[4]}칸</span></div>
-            `;
+            if (summaryList) {
+                summaryList.innerHTML = `
+                    <div class="flex justify-between text-pRed"><span>1번 빨강:</span> <span>${counts[1]}칸</span></div>
+                    <div class="flex justify-between text-pGreen"><span>2번 초록:</span> <span>${counts[2]}칸</span></div>
+                    <div class="flex justify-between text-pBlue"><span>3번 파랑:</span> <span>${counts[3]}칸</span></div>
+                    <div class="flex justify-between text-pYellow"><span>4번 노랑:</span> <span>${counts[4]}칸</span></div>
+                `;
+            }
 
             toggleModal("winnerModal", true);
 
             // Major Confetti Burst
-            confetti({
-                particleCount: 150,
-                spread: 100,
-                origin: { y: 0.5 }
-            });
+            if (typeof confetti === 'function') {
+                confetti({ particleCount: 150, spread: 100, origin: { y: 0.5 } });
+            }
         }
 
         // Restart Game
@@ -860,49 +836,63 @@
             showToast("새로운 게임이 시작되었습니다! 즐겁게 참여해 봐요.");
         };
 
+        // Realtime Sync Engine via Public WebSocket Broker (Zero Config)
+        function initRealtimeSync(roomId) {
+            const topic = `elementary_culture_game_2026/${roomId}`;
+
+            try {
+                // Connect to public WebSocket MQTT broker
+                mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', {
+                    clientId: 'tablet_' + Math.random().toString(16).substr(2, 8),
+                    clean: true,
+                    connectTimeout: 4000
+                });
+
+                mqttClient.on('connect', () => {
+                    console.log(`Connected to realtime server for ${roomId}`);
+                    mqttClient.subscribe(topic, { qos: 1 });
+                });
+
+                mqttClient.on('message', (t, message) => {
+                    try {
+                        const incomingData = JSON.parse(message.toString());
+                        // Only update if incoming state is newer or valid
+                        if (incomingData && incomingData.board && incomingData.lastUpdated > gameState.lastUpdated) {
+                            gameState.board = incomingData.board;
+                            gameState.currentTurn = incomingData.currentTurn || 1;
+                            gameState.lastUpdated = incomingData.lastUpdated;
+                            window.renderBoard();
+                        }
+                    } catch (e) {
+                        console.warn("Realtime sync parse error:", e);
+                    }
+                });
+
+                mqttClient.on('error', (err) => {
+                    console.warn("Realtime broker warning, fallback active:", err);
+                });
+            } catch (err) {
+                console.warn("Realtime connection error:", err);
+            }
+        }
+
         // Join Realtime Multiplayer Room
         window.joinRoom = function(roomId) {
             activeRoomId = roomId;
             document.getElementById("roomSelectSection").classList.add("hidden");
             document.getElementById("gameArea").classList.remove("hidden");
             document.getElementById("roomBadge").classList.remove("hidden");
-            document.getElementById("roomBadgeText").innerText = `${roomId.replace('Group', '')}모둠 실시간 연결`;
+            
+            const groupNum = roomId.replace('Group', '');
+            document.getElementById("roomBadgeText").innerText = `${groupNum}모둠 실시간 연결 중`;
 
-            // Render board immediately first to ensure 12 tiles appear without delay
+            // Immediately render initial board so screen never stays blank
             window.renderBoard();
 
-            // Subscribe to Firestore Realtime Updates (Rule 1 & Rule 2 Compliant)
-            if (db) {
-                try {
-                    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'culture_rooms', roomId);
-                    
-                    // Realtime Listener
-                    roomUnsubscribe = onSnapshot(roomDocRef, (docSnap) => {
-                        if (docSnap.exists()) {
-                            const data = docSnap.data();
-                            if (data.gameState) {
-                                gameState.board = data.gameState.board || Array(12).fill(null);
-                                gameState.currentTurn = data.gameState.currentTurn || 1;
-                                window.renderBoard();
-                            }
-                        } else {
-                            // Initialize room data
-                            syncGameState();
-                        }
-                    }, (error) => {
-                        console.warn("Firestore Realtime Error (Fallback to local mode):", error);
-                        // Force render board locally on connection/auth error
-                        window.renderBoard();
-                    });
-                } catch (err) {
-                    console.warn("Firestore initialization warning:", err);
-                    window.renderBoard();
-                }
-            } else {
-                window.renderBoard();
-            }
+            // Connect to real-time engine
+            initRealtimeSync(roomId);
 
-            showToast(`${roomId.replace('Group', '')}모둠에 접속하였습니다!`);
+            showToast(`${groupNum}모둠에 접속하였습니다! 다른 태블릿과 실시간 연결됩니다.`);
         };
 
         // Single Device Offline Mode
@@ -917,29 +907,27 @@
             showToast("1대 태블릿 모드로 시작되었습니다.");
         };
 
-        // Sync State to Firestore
-        async function syncGameState() {
+        // Broadcast State to All Tablets in Same Room
+        function syncGameState() {
+            gameState.lastUpdated = Date.now();
             window.renderBoard();
 
-            if (activeRoomId && activeRoomId !== "offline" && db) {
-                try {
-                    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'culture_rooms', activeRoomId);
-                    await setDoc(roomDocRef, {
-                        gameState: {
-                            board: gameState.board,
-                            currentTurn: gameState.currentTurn,
-                            updatedAt: Date.now()
-                        }
-                    }, { merge: true });
-                } catch (e) {
-                    console.error("State Sync Error:", e);
-                }
+            if (mqttClient && mqttClient.connected && activeRoomId && activeRoomId !== "offline") {
+                const topic = `elementary_culture_game_2026/${activeRoomId}`;
+                const payload = JSON.stringify({
+                    board: gameState.board,
+                    currentTurn: gameState.currentTurn,
+                    lastUpdated: gameState.lastUpdated
+                });
+
+                mqttClient.publish(topic, payload, { retain: true, qos: 1 });
             }
         }
 
         // Toggle Modal Helper
         window.toggleModal = function(modalId, show) {
             const modal = document.getElementById(modalId);
+            if (!modal) return;
             if (show) {
                 modal.classList.remove("modal-hidden");
                 modal.classList.add("modal-visible");
@@ -960,6 +948,8 @@
         function showToast(msg) {
             const toast = document.getElementById("toast");
             const toastMsg = document.getElementById("toastMsg");
+            if (!toast || !toastMsg) return;
+
             toastMsg.innerText = msg;
             toast.classList.remove("opacity-0", "pointer-events-none", "translate-y-4");
             toast.classList.add("opacity-100", "translate-y-0");
@@ -973,16 +963,10 @@
         // Attach Header Buttons
         document.getElementById("openRuleBtn").onclick = () => toggleModal("ruleModal", true);
         document.getElementById("resetGameBtn").onclick = () => {
-            if (confirmModal("정말로 게임을 다시 시작할까요?")) {
+            if (confirm("정말로 게임을 다시 시작할까요?")) {
                 window.restartGame();
             }
         };
-
-        // Custom Modal Confirmation Replacement
-        function confirmModal(msg) {
-            // Replacing alert/confirm with safe modal flow
-            return window.confirm ? window.confirm(msg) : true;
-        }
 
         // Initial setup on window load
         window.onload = function() {
